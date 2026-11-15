@@ -17,13 +17,13 @@ type UniSecMemProtector = TestSecMemProtector;
 /// PMP N-1 : Default grant kernel access with all mem.
 /// PMP 1   : Only used in Penglai, for temporarily grant kernel access with specific sec mem.
 /// PMP 0   : Protect SM code/data.
-const UNI_SECMEM_SM_SLOT: u32 = 0;
-const UNI_SECMEM_TEMP_SLOT: u32 = 1;
-const UNI_SECMEM_DEFAULT_SLOT: u32 = MAX_PMP_ENTRY_COUNT - 1;
+const UNI_SECMEM_SM_SLOT: PmpSlot = PmpSlot::new(0).unwrap();
+const UNI_SECMEM_TEMP_SLOT: PmpSlot = PmpSlot::new(1).unwrap();
+const UNI_SECMEM_DEFAULT_SLOT: PmpSlot = PmpSlot::new(MAX_PMP_ENTRY_COUNT - 1).unwrap();
 const UNI_SECMEM_PMP_ALLOCMASK: u64 = ((1 << MAX_PMP_ENTRY_COUNT) - 1)
-    & !((1u64 << UNI_SECMEM_SM_SLOT)
-        | (1u64 << UNI_SECMEM_TEMP_SLOT)
-        | (1u64 << UNI_SECMEM_DEFAULT_SLOT));
+    & !((1u64 << UNI_SECMEM_SM_SLOT.index())
+        | (1u64 << UNI_SECMEM_TEMP_SLOT.index())
+        | (1u64 << UNI_SECMEM_DEFAULT_SLOT.index()));
 /// Every slot is managed: allocable ones are used for enclaves, reserved ones are never allocated.
 const UNI_SECMEM_PMP_MANAGEMASK: u64 = (1u64 << MAX_PMP_ENTRY_COUNT) - 1;
 
@@ -112,7 +112,8 @@ where
             if !self.protector.disable(region.slot) {
                 error!(
                     "[SMM] Deinit Region-{} with slot-{} fail",
-                    region.id, region.slot
+                    region.id,
+                    region.slot.index()
                 );
             }
         }

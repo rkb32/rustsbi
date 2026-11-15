@@ -4,7 +4,7 @@
 
 // PMP management bitmap, for alloc/free PMP slot in Penglai/Keystone. A bitmap
 // can describe a segment of consecutive PMP entries.
-use super::MAX_PMP_ENTRY_COUNT;
+use super::PmpSlot;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -34,7 +34,7 @@ impl PMPSlotAllocator {
     }
 
     /// Alloc first free PMP slot in bitmap and update bitmap.
-    pub fn alloc(&mut self) -> Result<u32, PmpError> {
+    pub fn alloc(&mut self) -> Result<PmpSlot, PmpError> {
         loop {
             let cur_slots = self.pmp_slots.load(Ordering::Acquire);
             // check avaliable slot
@@ -53,14 +53,16 @@ impl PMPSlotAllocator {
                 Ordering::Release,
                 Ordering::Relaxed,
             ) {
-                Ok(_) => return Ok(pmp_idx),
+                // alloc_mask only has bits below MAX_PMP_ENTRY_COUNT, so this is a valid slot.
+                Ok(_) => return Ok(PmpSlot::new(pmp_idx).ok_or(PmpError::IndexOutOfRange)?),
                 Err(_) => continue,
             }
         }
     }
 
-    pub fn free(&mut self, idx: u32) -> Result<(), PmpError> {
-        let free_slot = 1u64 << (idx & (MAX_PMP_ENTRY_COUNT - 1));
+    /// Free an allocated slot. Fails if the slot cannot be allocated or is not allocated.
+    pub fn free(&mut self, slot: PmpSlot) -> Result<(), PmpError> {
+        let free_slot = 1u64 << slot.index();
         loop {
             let cur_slots = self.pmp_slots.load(Ordering::Acquire);
             if (cur_slots & free_slot & self.alloc_mask) == 0 {
@@ -69,7 +71,6 @@ impl PMPSlotAllocator {
 
             let new_bitmap = cur_slots & !free_slot;
 
-            // 4. 尝试原子地更新位图
             match self.pmp_slots.compare_exchange(
                 cur_slots,
                 new_bitmap,
@@ -82,8 +83,9 @@ impl PMPSlotAllocator {
         }
     }
 
-    pub fn is_alloc(&self, idx: u32) -> Result<bool, PmpError> {
-        let check_slot = 1u64 << (idx & (MAX_PMP_ENTRY_COUNT - 1));
+    /// Whether `slot` is allocated. Fails if the slot is not allocable.
+    pub fn is_alloc(&self, slot: PmpSlot) -> Result<bool, PmpError> {
+        let check_slot = 1u64 << slot.index();
         if (check_slot & self.alloc_mask) == 0 {
             return Err(PmpError::IndexOutOfRange);
         }
@@ -91,14 +93,21 @@ impl PMPSlotAllocator {
         Ok((cur_slots & check_slot) != 0)
     }
 
-    pub fn is_managed(&self, idx: u32) -> bool {
-        idx < MAX_PMP_ENTRY_COUNT && self.manage_mask & (1u64 << idx) != 0
+    /// Whether `slot` is managed by this allocator, including reserved slots.
+    pub fn is_managed(&self, slot: PmpSlot) -> bool {
+        self.manage_mask & (1u64 << slot.index()) != 0
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MAX_PMP_ENTRY_COUNT;
+
+    fn slot(idx: u32) -> PmpSlot {
+        PmpSlot::new(idx).unwrap()
+    }
+
     // --- Utility function to create masks ---
     fn create_mask(indices: &[u8]) -> u64 {
         let mut mask = 0u64;
@@ -123,22 +132,22 @@ mod tests {
 
         // 1. Allocate first slot (expected 0, the lowest set bit)
         let idx1 = allocator.alloc().unwrap();
-        assert_eq!(idx1, 0);
+        assert_eq!(idx1.index(), 0);
         assert_eq!(allocator.pmp_slots.load(Ordering::Relaxed), 0b1);
 
         // 2. Allocate second slot (expected 1)
         let idx2 = allocator.alloc().unwrap();
-        assert_eq!(idx2, 1);
+        assert_eq!(idx2.index(), 1);
         assert_eq!(allocator.pmp_slots.load(Ordering::Relaxed), 0b11);
 
         // 3. Allocate third slot (expected 8, skipping 2-7)
         let idx3 = allocator.alloc().unwrap();
-        assert_eq!(idx3, 8);
+        assert_eq!(idx3.index(), 8);
         assert_eq!(allocator.pmp_slots.load(Ordering::Relaxed), 0b100000011);
 
         // 4. Allocate fourth slot (expected 9)
         let idx4 = allocator.alloc().unwrap();
-        assert_eq!(idx4, 9);
+        assert_eq!(idx4.index(), 9);
         assert_eq!(allocator.pmp_slots.load(Ordering::Relaxed), 0b1100000011);
     }
 
@@ -151,16 +160,16 @@ mod tests {
 
         // 1. Allocate the only slot
         let idx = allocator.alloc().unwrap();
-        assert_eq!(idx, 15);
+        assert_eq!(idx.index(), 15);
 
         // 2. Try to allocate again
         assert_eq!(allocator.alloc(), Err(PmpError::NoFreeSlot));
 
         // 3. Free the slot
-        allocator.free(15).unwrap();
+        allocator.free(slot(15)).unwrap();
 
         // 4. Allocate again (should succeed)
-        assert_eq!(allocator.alloc().unwrap(), 15);
+        assert_eq!(allocator.alloc().unwrap().index(), 15);
     }
 
     // --- Test: Free Logic and Error Handling ---
@@ -173,20 +182,20 @@ mod tests {
         // Allocate slot 4
         allocator.alloc().unwrap();
 
-        // 1. Error: Index not in range (idx 0 is not in the mask)
-        assert_eq!(allocator.free(0), Err(PmpError::IndexOutOfRange));
+        // 1. Error: slot not in the alloc mask (0 is not allocable)
+        assert_eq!(allocator.free(slot(0)), Err(PmpError::IndexOutOfRange));
 
-        // 2. Error: Index not in range (idx 63 is too high)
-        assert_eq!(allocator.free(63), Err(PmpError::IndexOutOfRange));
+        // 2. Out-of-range indices cannot be represented as PmpSlot at all
+        assert!(PmpSlot::new(MAX_PMP_ENTRY_COUNT).is_none());
 
-        // 3. Error: Index not allocated (idx 5 is in range, but free)
-        assert_eq!(allocator.free(5), Err(PmpError::IndexOutOfRange));
+        // 3. Error: slot not allocated (5 is allocable, but free)
+        assert_eq!(allocator.free(slot(5)), Err(PmpError::IndexOutOfRange));
 
         // 4. Success: Free allocated slot 4
-        assert_eq!(allocator.free(4), Ok(()));
+        assert_eq!(allocator.free(slot(4)), Ok(()));
 
-        // 5. Error: Index not allocated (idx 4 is now free)
-        assert_eq!(allocator.free(4), Err(PmpError::IndexOutOfRange));
+        // 5. Error: slot not allocated (4 is now free)
+        assert_eq!(allocator.free(slot(4)), Err(PmpError::IndexOutOfRange));
     }
 
     // --- Test: is_alloc Check ---
@@ -199,29 +208,22 @@ mod tests {
         let mut allocator = PMPSlotAllocator::new(alloc_mask, alloc_mask);
 
         // 1. In range, but free
-        assert_eq!(allocator.is_alloc(TEST_BIT1), Ok(false));
+        assert_eq!(allocator.is_alloc(slot(TEST_BIT1)), Ok(false));
 
-        // 2. Out of range
+        // 2. Not allocable
         assert_eq!(
-            allocator.is_alloc(TEST_BIT1 + 1),
+            allocator.is_alloc(slot(TEST_BIT3 - 1)),
             Err(PmpError::IndexOutOfRange)
         );
-        assert_eq!(
-            allocator.is_alloc(TEST_BIT3 - 1),
-            Err(PmpError::IndexOutOfRange)
-        );
-        assert_eq!(
-            allocator.is_alloc(MAX_PMP_ENTRY_COUNT),
-            Err(PmpError::IndexOutOfRange)
-        );
+        assert!(PmpSlot::new(MAX_PMP_ENTRY_COUNT).is_none());
 
         // 3. Allocate
         allocator.alloc().unwrap();
         allocator.alloc().unwrap();
 
         // 4. In range, and allocated
-        assert_eq!(allocator.is_alloc(TEST_BIT3), Ok(true));
-        assert_eq!(allocator.is_alloc(TEST_BIT2), Ok(true));
-        assert_eq!(allocator.is_alloc(TEST_BIT1), Ok(false)); // Still free
+        assert_eq!(allocator.is_alloc(slot(TEST_BIT3)), Ok(true));
+        assert_eq!(allocator.is_alloc(slot(TEST_BIT2)), Ok(true));
+        assert_eq!(allocator.is_alloc(slot(TEST_BIT1)), Ok(false)); // Still free
     }
 }

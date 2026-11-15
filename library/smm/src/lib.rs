@@ -10,7 +10,7 @@ use crate::allocators::NoneAlloc;
 use core::ptr::NonNull;
 use core::{alloc::Layout, usize};
 use log::error;
-use pmpm::MAX_PMP_ENTRY_COUNT;
+use pmpm::{MAX_PMP_ENTRY_COUNT, PmpSlot};
 
 pub mod allocators;
 pub mod manager;
@@ -45,7 +45,7 @@ where
     addr: usize,
     len: usize,
     id: usize,
-    slot: u32,
+    slot: PmpSlot,
     is_used: bool,
     pub allocator: SecMemAllocatorWrapper<ORDER, AR, AA>,
 }
@@ -83,7 +83,7 @@ where
     AA: SecMemAllocator<ORDER>,
 {
     /// Create new region
-    pub fn new(addr: usize, len: usize, id: usize, pmp_slot: u32) -> Self {
+    pub fn new(addr: usize, len: usize, id: usize, pmp_slot: PmpSlot) -> Self {
         Self {
             addr,
             len,
@@ -142,21 +142,21 @@ where
 
 pub trait SecMemProtector {
     /// Alloc a hardware for current region
-    fn alloc(&mut self) -> Option<u32>;
+    fn alloc(&mut self) -> Option<PmpSlot>;
     /// Free a hardware
-    fn free(&mut self, hwid: u32) -> bool;
+    fn free(&mut self, hwid: PmpSlot) -> bool;
     /// Check memory area can be protect by hardware or not.
     fn is_protectable(&self, addr: usize, len: usize) -> bool;
     /// Grant access to secure mem on current hart
-    fn grant_access(&self, addr: usize, len: usize, hwid: u32) -> bool;
+    fn grant_access(&self, addr: usize, len: usize, hwid: PmpSlot) -> bool;
     /// Retrive access to secure mem on current hart
-    fn retrive_access(&self, addr: usize, len: usize, hwid: u32) -> bool;
+    fn retrive_access(&self, addr: usize, len: usize, hwid: PmpSlot) -> bool;
     /// Grant access to secure mem on all hart
-    fn grant_access_all(&self, addr: usize, len: usize, hwid: u32) -> bool;
+    fn grant_access_all(&self, addr: usize, len: usize, hwid: PmpSlot) -> bool;
     /// Retrive access to secure mem on all hart
-    fn retrive_access_all(&self, addr: usize, len: usize, hwid: u32) -> bool;
+    fn retrive_access_all(&self, addr: usize, len: usize, hwid: PmpSlot) -> bool;
     /// Disable hardware
-    fn disable(&self, hwid: u32) -> bool;
+    fn disable(&self, hwid: PmpSlot) -> bool;
     // Enable hardware
-    fn enable(&self, hwid: u32) -> bool;
+    fn enable(&self, hwid: PmpSlot) -> bool;
 }

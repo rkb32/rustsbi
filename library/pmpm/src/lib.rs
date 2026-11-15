@@ -8,6 +8,26 @@
 pub const MAX_PMP_ENTRY_COUNT: u32 = 16;
 pub const PMP_SHIFT: u32 = 2;
 
+/// A PMP slot index. Always below `MAX_PMP_ENTRY_COUNT`, so out-of-range values cannot be built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PmpSlot(u32);
+
+impl PmpSlot {
+    /// Returns the slot for `idx`, or `None` if `idx` is out of range.
+    pub const fn new(idx: u32) -> Option<Self> {
+        if idx < MAX_PMP_ENTRY_COUNT {
+            Some(PmpSlot(idx))
+        } else {
+            None
+        }
+    }
+
+    /// The raw PMP entry index.
+    pub const fn index(self) -> u32 {
+        self.0
+    }
+}
+
 use core::usize;
 
 use riscv::register::{
@@ -129,7 +149,8 @@ pub fn decode_pmp_addr(pmpaddr: usize, range: Range) -> PmpSlice {
     }
 }
 
-pub fn set_pmp_cfg(idx: u32, config: &PmpConfig) {
+pub fn set_pmp_cfg(slot: PmpSlot, config: &PmpConfig) {
+    let idx = slot.index();
     let cfg_idx = (idx % 8) as usize;
     unsafe {
         match idx {
@@ -165,8 +186,8 @@ unsafe fn _set_pmp_addr(idx: u32, addr: usize) {
 }
 
 //TODO: It depends on IPIs to sync PMP configuration, here is dummy implement.
-pub fn set_pmp_entry_sync(idx: u32, addr: usize, len: usize, config: &PmpConfig) -> bool {
-    set_pmp_entry(idx, addr, len, config)
+pub fn set_pmp_entry_sync(slot: PmpSlot, addr: usize, len: usize, config: &PmpConfig) -> bool {
+    set_pmp_entry(slot, addr, len, config)
 }
 
 /// Returns the log2 of `len` for `range`, or `None` if NAPOT is given a length below 8 bytes.
@@ -193,12 +214,13 @@ fn slice_log2len(len: usize, range: Range) -> Option<u32> {
     }
 }
 
-pub fn set_pmp_entry(idx: u32, addr: usize, len: usize, config: &PmpConfig) -> bool {
+pub fn set_pmp_entry(slot: PmpSlot, addr: usize, len: usize, config: &PmpConfig) -> bool {
+    let idx = slot.index();
     // The memory area should be check before function call.
-    if idx >= MAX_PMP_ENTRY_COUNT || get_pmp_cfg(idx).is_locked() {
+    if get_pmp_cfg(slot).is_locked() {
         return false;
     }
-    if !pmpaddr_writable(idx) {
+    if !pmpaddr_writable(slot) {
         return false;
     }
     let Some(log2len) = slice_log2len(len, config.range) else {
@@ -207,14 +229,15 @@ pub fn set_pmp_entry(idx: u32, addr: usize, len: usize, config: &PmpConfig) -> b
     let slice = PmpSlice::new(log2len, addr, 0);
     unsafe {
         _set_pmp_addr(idx, encode_pmp_addr(&slice, config.range));
-        set_pmp_cfg(idx, config);
+        set_pmp_cfg(slot, config);
     }
     true
 }
 
-pub fn set_pmp_addr(idx: u32, addr: usize, len: usize, range: Range) -> bool {
+pub fn set_pmp_addr(slot: PmpSlot, addr: usize, len: usize, range: Range) -> bool {
+    let idx = slot.index();
     // The memory area should be check before function call.
-    if idx >= MAX_PMP_ENTRY_COUNT || !pmpaddr_writable(idx) {
+    if !pmpaddr_writable(slot) {
         return false;
     }
     let Some(log2len) = slice_log2len(len, range) else {
@@ -227,14 +250,14 @@ pub fn set_pmp_addr(idx: u32, addr: usize, len: usize, range: Range) -> bool {
     true
 }
 
-/// Whether writing pmpaddr[idx] takes effect. Hardware ignores the write if entry `idx` is
-/// locked, or if entry `idx + 1` is a locked TOR entry (it uses pmpaddr[idx] as its bottom).
-fn pmpaddr_writable(idx: u32) -> bool {
-    if get_pmp_cfg(idx).is_locked() {
+/// Whether writing pmpaddr[slot] takes effect. Hardware ignores the write if the entry is
+/// locked, or if the next entry is a locked TOR entry (it uses pmpaddr[slot] as its bottom).
+fn pmpaddr_writable(slot: PmpSlot) -> bool {
+    if get_pmp_cfg(slot).is_locked() {
         return false;
     }
-    if idx + 1 < MAX_PMP_ENTRY_COUNT {
-        let next = get_pmp_cfg(idx + 1);
+    if let Some(next_slot) = PmpSlot::new(slot.index() + 1) {
+        let next = get_pmp_cfg(next_slot);
         if next.is_locked() && next.range() == Range::TOR {
             return false;
         }
@@ -242,13 +265,13 @@ fn pmpaddr_writable(idx: u32) -> bool {
     true
 }
 
-/// Turns entry `idx` off by writing its config only. pmpaddr[idx] is kept, because it is the
-/// bottom of a TOR entry at idx+1.
-pub fn disable_pmp_entry(idx: u32) -> bool {
-    if idx >= MAX_PMP_ENTRY_COUNT || get_pmp_cfg(idx).is_locked() {
+/// Turns the entry off by writing its config only. Its pmpaddr is kept, because it is the
+/// bottom of a TOR entry at the next slot.
+pub fn disable_pmp_entry(slot: PmpSlot) -> bool {
+    if get_pmp_cfg(slot).is_locked() {
         return false;
     }
-    set_pmp_cfg(idx, &PmpConfig::new(Range::OFF, Permission::NONE, false));
+    set_pmp_cfg(slot, &PmpConfig::new(Range::OFF, Permission::NONE, false));
     true
 }
 
@@ -274,7 +297,8 @@ fn _get_pmp_addr(idx: u32) -> usize {
     }
 }
 
-pub fn get_pmp_cfg(idx: u32) -> PmpConfig {
+pub fn get_pmp_cfg(slot: PmpSlot) -> PmpConfig {
+    let idx = slot.index();
     let cfg_idx = (idx % 8) as usize;
     let pmp_config = match idx {
         0..=7 => pmpcfg0::read().into_config(cfg_idx),
@@ -288,8 +312,9 @@ pub fn get_pmp_cfg(idx: u32) -> PmpConfig {
     }
 }
 
-pub fn get_pmp_entry(idx: u32) -> (usize, PmpConfig) {
-    (_get_pmp_addr(idx), get_pmp_cfg(idx))
+pub fn get_pmp_entry(slot: PmpSlot) -> (usize, PmpConfig) {
+    let idx = slot.index();
+    (_get_pmp_addr(idx), get_pmp_cfg(slot))
 }
 
 #[cfg(test)]
