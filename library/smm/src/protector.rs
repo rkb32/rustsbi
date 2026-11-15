@@ -102,6 +102,8 @@ impl SecMemProtector for SecMemProtectorByPMP {
                 &PmpConfig::new(Range::OFF, Permission::NONE, false),
             )
     }
+    /// Not implemented as a real operation: nothing calls it, and with the current
+    /// zero-length call it returns `false` instead of panicking. See #502.
     fn enable(&self, hwid: u32) -> bool {
         self.is_managed(hwid)
             && set_pmp_entry_sync(

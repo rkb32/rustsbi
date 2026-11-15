@@ -24,9 +24,8 @@ const UNI_SECMEM_PMP_ALLOCMASK: u64 = ((1 << MAX_PMP_ENTRY_COUNT) - 1)
     & !((1u64 << UNI_SECMEM_SM_SLOT)
         | (1u64 << UNI_SECMEM_TEMP_SLOT)
         | (1u64 << UNI_SECMEM_DEFAULT_SLOT));
-const UNI_SECMEM_PMP_MANAGEMASK: u64 = (1u64 << UNI_SECMEM_SM_SLOT)
-    | (1u64 << UNI_SECMEM_TEMP_SLOT)
-    | (1u64 << UNI_SECMEM_DEFAULT_SLOT);
+/// Every slot is managed: allocable ones are used for enclaves, reserved ones are never allocated.
+const UNI_SECMEM_PMP_MANAGEMASK: u64 = (1u64 << MAX_PMP_ENTRY_COUNT) - 1;
 
 pub struct UniSecMemManager<const ORDER: usize, AR, AA>
 where

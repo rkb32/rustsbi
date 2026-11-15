@@ -169,17 +169,20 @@ pub fn set_pmp_entry_sync(idx: u32, addr: usize, len: usize, config: &PmpConfig)
     set_pmp_entry(idx, addr, len, config)
 }
 
-/// Returns the log2 of `len` for `range`, or `None` if NAPOT is given a zero length.
+/// Returns the log2 of `len` for `range`, or `None` if NAPOT is given a length below 8 bytes.
 ///
 /// Only NAPOT uses the length. Other ranges ignore it, so `len` (possibly 0) is accepted.
-/// The caller must check the area first (see `check_pmp_area_available`).
+/// Lengths below 8 would underflow the NAPOT encoding. Non-power-of-two lengths round down;
+/// the caller must check the area first (see `check_pmp_area_available`).
 fn slice_log2len(len: usize, range: Range) -> Option<u32> {
     match range {
         Range::NAPOT => {
             if len == usize::MAX {
                 Some(usize::BITS)
-            } else {
+            } else if len >= 8 {
                 len.checked_ilog2()
+            } else {
+                None
             }
         }
         Range::NA4 | Range::TOR | Range::OFF => Some(0),
@@ -188,6 +191,9 @@ fn slice_log2len(len: usize, range: Range) -> Option<u32> {
 
 pub fn set_pmp_entry(idx: u32, addr: usize, len: usize, config: &PmpConfig) -> bool {
     // The memory area should be check before function call.
+    if idx >= MAX_PMP_ENTRY_COUNT {
+        return false;
+    }
     let Some(log2len) = slice_log2len(len, config.range) else {
         return false;
     };
@@ -201,6 +207,9 @@ pub fn set_pmp_entry(idx: u32, addr: usize, len: usize, config: &PmpConfig) -> b
 
 pub fn set_pmp_addr(idx: u32, addr: usize, len: usize, range: Range) -> bool {
     // The memory area should be check before function call.
+    if idx >= MAX_PMP_ENTRY_COUNT {
+        return false;
+    }
     let Some(log2len) = slice_log2len(len, range) else {
         return false;
     };
@@ -410,6 +419,8 @@ mod tests {
         assert_eq!(slice_log2len(usize::MAX, Range::NAPOT), Some(usize::BITS));
         // Zero length for NAPOT (what enable() passes) must not panic.
         assert_eq!(slice_log2len(0, Range::NAPOT), None);
+        // Lengths below 8 would underflow the NAPOT encoding.
+        assert_eq!(slice_log2len(4, Range::NAPOT), None);
         // Other ranges ignore the length, so zero is fine (disable() relies on this).
         assert_eq!(slice_log2len(0, Range::OFF), Some(0));
         assert_eq!(slice_log2len(0, Range::NA4), Some(0));
