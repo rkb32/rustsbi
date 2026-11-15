@@ -141,6 +141,10 @@ where
 }
 
 pub trait SecMemProtector {
+    /// Build a protector from the allocable and managed slot masks.
+    fn with_masks(alloc_mask: u64, manage_mask: u64) -> Self
+    where
+        Self: Sized;
     /// Alloc a hardware for current region
     fn alloc(&mut self) -> Option<PmpSlot>;
     /// Free a hardware

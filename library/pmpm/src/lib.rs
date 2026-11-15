@@ -81,8 +81,13 @@ impl PmpSlice {
     pub fn log2len(&self) -> u32 {
         self.log2len
     }
+    /// Region length. Saturates at `usize::MAX` for the full address space (`log2len == BITS`).
     pub fn len(&self) -> usize {
-        1usize << self.log2len
+        if self.log2len >= usize::BITS {
+            usize::MAX
+        } else {
+            1usize << self.log2len
+        }
     }
     pub fn lo(&self) -> usize {
         self.pa_lo
@@ -90,8 +95,9 @@ impl PmpSlice {
     pub fn start(&self) -> usize {
         self.pa_lo
     }
+    /// Last address in the region. Saturates for the full address space.
     pub fn end(&self) -> usize {
-        self.pa_lo + (1 << self.log2len) - 1
+        self.pa_lo.saturating_add(self.len() - 1)
     }
 }
 
@@ -250,15 +256,15 @@ pub fn set_pmp_addr(slot: PmpSlot, addr: usize, len: usize, range: Range) -> boo
     true
 }
 
-/// Whether writing pmpaddr[slot] takes effect. Hardware ignores the write if the entry is
-/// locked, or if the next entry is a locked TOR entry (it uses pmpaddr[slot] as its bottom).
+/// Whether writing pmpaddr[slot] is allowed. Refused if the entry is locked (hardware would
+/// ignore the write), or if the next entry is a TOR entry, whether locked or not: its bottom is
+/// pmpaddr[slot], so writing it would silently move that entry's region.
 fn pmpaddr_writable(slot: PmpSlot) -> bool {
     if get_pmp_cfg(slot).is_locked() {
         return false;
     }
     if let Some(next_slot) = PmpSlot::new(slot.index() + 1) {
-        let next = get_pmp_cfg(next_slot);
-        if next.is_locked() && next.range() == Range::TOR {
+        if get_pmp_cfg(next_slot).range() == Range::TOR {
             return false;
         }
     }
@@ -273,6 +279,12 @@ pub fn disable_pmp_entry(slot: PmpSlot) -> bool {
     }
     set_pmp_cfg(slot, &PmpConfig::new(Range::OFF, Permission::NONE, false));
     true
+}
+
+/// Sync variant of `disable_pmp_entry`, used by the protector. Mirrors `set_pmp_entry_sync`.
+//TODO: It depends on IPIs to sync PMP configuration, here is dummy implement.
+pub fn disable_pmp_entry_sync(slot: PmpSlot) -> bool {
+    disable_pmp_entry(slot)
 }
 
 fn _get_pmp_addr(idx: u32) -> usize {

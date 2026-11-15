@@ -4,7 +4,7 @@
 
 // PMP management bitmap, for alloc/free PMP slot in Penglai/Keystone. A bitmap
 // can describe a segment of consecutive PMP entries.
-use super::PmpSlot;
+use super::{MAX_PMP_ENTRY_COUNT, PmpSlot};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -25,11 +25,14 @@ pub struct PMPSlotAllocator {
 impl PMPSlotAllocator {
     /// Create new PMP bitmap.
     pub const fn new(alloc_mask: u64, manage_mask: u64) -> Self {
+        // Only the low MAX_PMP_ENTRY_COUNT bits name real slots. Higher bits must not be
+        // allocable, or a slot could be marked allocated without a valid index.
+        const SLOTS: u64 = (1u64 << MAX_PMP_ENTRY_COUNT) - 1;
         PMPSlotAllocator {
             // use alloc mask to init PMP bitmap
             pmp_slots: AtomicU64::new(0),
-            alloc_mask,
-            manage_mask,
+            alloc_mask: alloc_mask & SLOTS,
+            manage_mask: manage_mask & SLOTS,
         }
     }
 

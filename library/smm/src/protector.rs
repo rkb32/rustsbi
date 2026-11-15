@@ -8,7 +8,7 @@
 use super::SecMemProtector;
 use core::usize;
 use pmpm::{
-    PmpConfig, PmpSlot, bitmap::PMPSlotAllocator, check_pmp_area_available, disable_pmp_entry,
+    PmpConfig, PmpSlot, bitmap::PMPSlotAllocator, check_pmp_area_available, disable_pmp_entry_sync,
     set_pmp_entry, set_pmp_entry_sync,
 };
 use riscv::register::{Permission, Range};
@@ -26,6 +26,9 @@ impl TestSecMemProtector {
 }
 
 impl SecMemProtector for TestSecMemProtector {
+    fn with_masks(alloc_mask: u64, manage_mask: u64) -> Self {
+        Self::new(alloc_mask, manage_mask)
+    }
     fn is_protectable(&self, addr: usize, len: usize) -> bool {
         check_pmp_area_available(addr, len, Range::NAPOT)
     }
@@ -78,6 +81,9 @@ impl SecMemProtector for TestSecMemProtector {
 pub type SecMemProtectorByPMP = PMPSlotAllocator;
 
 impl SecMemProtector for SecMemProtectorByPMP {
+    fn with_masks(alloc_mask: u64, manage_mask: u64) -> Self {
+        Self::new(alloc_mask, manage_mask)
+    }
     fn is_protectable(&self, addr: usize, len: usize) -> bool {
         check_pmp_area_available(addr, len, Range::NAPOT)
     }
@@ -94,7 +100,7 @@ impl SecMemProtector for SecMemProtectorByPMP {
         }
     }
     fn disable(&self, hwid: PmpSlot) -> bool {
-        self.is_managed(hwid) && disable_pmp_entry(hwid)
+        self.is_managed(hwid) && disable_pmp_entry_sync(hwid)
     }
     /// Not implemented as a real operation: nothing calls it, and with the current
     /// zero-length call it returns `false` instead of panicking. See #502.
