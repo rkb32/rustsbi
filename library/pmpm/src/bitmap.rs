@@ -5,7 +5,12 @@
 // PMP management bitmap, for alloc/free PMP slot in Penglai/Keystone. A bitmap
 // can describe a segment of consecutive PMP entries.
 use super::{MAX_PMP_ENTRY_COUNT, PmpSlot};
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::Ordering;
+// RV32 has no 64-bit atomics. The slot word is 16 bits, so a 32-bit atomic holds it.
+#[cfg(target_arch = "riscv32")]
+use core::sync::atomic::AtomicU32 as SlotWord;
+#[cfg(not(target_arch = "riscv32"))]
+use core::sync::atomic::AtomicU64 as SlotWord;
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum PmpError {
@@ -15,7 +20,7 @@ pub enum PmpError {
 
 #[derive(Debug)]
 pub struct PMPSlotAllocator {
-    pmp_slots: AtomicU64,
+    pmp_slots: SlotWord,
     /// PMP slots that can be used.
     alloc_mask: u64,
     /// PMP slots that current allocator managed, including reserved ones.
@@ -30,16 +35,27 @@ impl PMPSlotAllocator {
         const SLOTS: u64 = (1u64 << MAX_PMP_ENTRY_COUNT) - 1;
         PMPSlotAllocator {
             // use alloc mask to init PMP bitmap
-            pmp_slots: AtomicU64::new(0),
+            pmp_slots: SlotWord::new(0),
             alloc_mask: alloc_mask & SLOTS,
             manage_mask: manage_mask & SLOTS,
         }
     }
 
+    fn load_bits(&self) -> u64 {
+        self.pmp_slots.load(Ordering::Acquire) as u64
+    }
+
+    fn cas_bits(&self, cur: u64, new: u64) -> Result<(), ()> {
+        self.pmp_slots
+            .compare_exchange(cur as _, new as _, Ordering::Release, Ordering::Relaxed)
+            .map(|_| ())
+            .map_err(|_| ())
+    }
+
     /// Alloc first free PMP slot in bitmap and update bitmap.
     pub fn alloc(&mut self) -> Result<PmpSlot, PmpError> {
         loop {
-            let cur_slots = self.pmp_slots.load(Ordering::Acquire);
+            let cur_slots = self.load_bits();
             // check avaliable slot
             let aval_slots = !cur_slots & self.alloc_mask;
             if aval_slots == 0 {
@@ -50,12 +66,7 @@ impl PMPSlotAllocator {
             let pmp_idx = aval_slots.trailing_zeros();
             let new_bitmap = cur_slots | (1u64 << pmp_idx);
             // set new alloc bit
-            match self.pmp_slots.compare_exchange(
-                cur_slots,
-                new_bitmap,
-                Ordering::Release,
-                Ordering::Relaxed,
-            ) {
+            match self.cas_bits(cur_slots, new_bitmap) {
                 // alloc_mask only has bits below MAX_PMP_ENTRY_COUNT, so this is a valid slot.
                 Ok(_) => return Ok(PmpSlot::new(pmp_idx).ok_or(PmpError::IndexOutOfRange)?),
                 Err(_) => continue,
@@ -67,19 +78,14 @@ impl PMPSlotAllocator {
     pub fn free(&mut self, slot: PmpSlot) -> Result<(), PmpError> {
         let free_slot = 1u64 << slot.index();
         loop {
-            let cur_slots = self.pmp_slots.load(Ordering::Acquire);
+            let cur_slots = self.load_bits();
             if (cur_slots & free_slot & self.alloc_mask) == 0 {
                 return Err(PmpError::IndexOutOfRange);
             }
 
             let new_bitmap = cur_slots & !free_slot;
 
-            match self.pmp_slots.compare_exchange(
-                cur_slots,
-                new_bitmap,
-                Ordering::Release,
-                Ordering::Relaxed,
-            ) {
+            match self.cas_bits(cur_slots, new_bitmap) {
                 Ok(_) => return Ok(()),
                 Err(_) => continue,
             }
@@ -92,7 +98,7 @@ impl PMPSlotAllocator {
         if (check_slot & self.alloc_mask) == 0 {
             return Err(PmpError::IndexOutOfRange);
         }
-        let cur_slots = self.pmp_slots.load(Ordering::Acquire);
+        let cur_slots = self.load_bits();
         Ok((cur_slots & check_slot) != 0)
     }
 

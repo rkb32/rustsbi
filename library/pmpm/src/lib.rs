@@ -35,6 +35,8 @@ use riscv::register::{
     pmpaddr7, pmpaddr8, pmpaddr9, pmpaddr10, pmpaddr11, pmpaddr12, pmpaddr13, pmpaddr14, pmpaddr15,
     pmpcfg0, pmpcfg2,
 };
+#[cfg(target_arch = "riscv32")]
+use riscv::register::{pmpcfg1, pmpcfg3};
 pub mod bitmap;
 
 #[derive(Debug, Clone, Copy)]
@@ -155,6 +157,38 @@ pub fn decode_pmp_addr(pmpaddr: usize, range: Range) -> PmpSlice {
     }
 }
 
+/// RV32: each config register holds 4 entries, so entries map to pmpcfg0..3.
+#[cfg(target_arch = "riscv32")]
+pub fn set_pmp_cfg(slot: PmpSlot, config: &PmpConfig) {
+    let idx = slot.index();
+    unsafe {
+        match idx {
+            0..=3 => pmpcfg0::set_pmp(idx as usize, config.range, config.perm, config.is_locked),
+            4..=7 => pmpcfg1::set_pmp(
+                (idx - 4) as usize,
+                config.range,
+                config.perm,
+                config.is_locked,
+            ),
+            8..=11 => pmpcfg2::set_pmp(
+                (idx - 8) as usize,
+                config.range,
+                config.perm,
+                config.is_locked,
+            ),
+            12..=15 => pmpcfg3::set_pmp(
+                (idx - 12) as usize,
+                config.range,
+                config.perm,
+                config.is_locked,
+            ),
+            _ => panic!("Invalid PMP index for cfg"),
+        }
+    }
+}
+
+/// RV64: pmpcfg0 holds entries 0-7 and pmpcfg2 holds 8-15.
+#[cfg(not(target_arch = "riscv32"))]
 pub fn set_pmp_cfg(slot: PmpSlot, config: &PmpConfig) {
     let idx = slot.index();
     let cfg_idx = (idx % 8) as usize;
@@ -309,14 +343,30 @@ fn _get_pmp_addr(idx: u32) -> usize {
     }
 }
 
-pub fn get_pmp_cfg(slot: PmpSlot) -> PmpConfig {
-    let idx = slot.index();
+/// Reads the raw config for entry `idx`. Mirrors the register mapping in `set_pmp_cfg`.
+#[cfg(target_arch = "riscv32")]
+fn read_pmp_cfg(idx: u32) -> riscv::register::Pmp {
+    match idx {
+        0..=3 => pmpcfg0::read().into_config(idx as usize),
+        4..=7 => pmpcfg1::read().into_config((idx - 4) as usize),
+        8..=11 => pmpcfg2::read().into_config((idx - 8) as usize),
+        12..=15 => pmpcfg3::read().into_config((idx - 12) as usize),
+        _ => panic!("Invalid PMP index"),
+    }
+}
+
+#[cfg(not(target_arch = "riscv32"))]
+fn read_pmp_cfg(idx: u32) -> riscv::register::Pmp {
     let cfg_idx = (idx % 8) as usize;
-    let pmp_config = match idx {
+    match idx {
         0..=7 => pmpcfg0::read().into_config(cfg_idx),
         8..=15 => pmpcfg2::read().into_config(cfg_idx),
         _ => panic!("Invalid PMP index"),
-    };
+    }
+}
+
+pub fn get_pmp_cfg(slot: PmpSlot) -> PmpConfig {
+    let pmp_config = read_pmp_cfg(slot.index());
     PmpConfig {
         range: (pmp_config.range),
         perm: (pmp_config.permission),
