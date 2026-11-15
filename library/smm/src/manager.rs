@@ -155,14 +155,17 @@ where
             .alloc_regions
             .iter()
             .position(|region| region.is_used == false)?;
-        let region = self.alloc_regions.swap_remove(index);
+        let slot = self.alloc_regions[index].slot;
         // Sanitization is done when free enclave memory. And in-use region won't be reclaim, so
         // no need clean secure memory.
-        // unprotect region and try free PMP slot
-        if self.protector.disable(region.slot) && self.protector.free(region.slot) {
-            return Some((region.addr, region.len));
+        // Unprotect first. If that fails, keep the region in the list, still protected.
+        if !self.protector.disable(slot) {
+            return None;
         }
-        None
+        let region = self.alloc_regions.swap_remove(index);
+        // Memory is unprotected now, so hand it back even if freeing the slot fails.
+        let _ = self.protector.free(region.slot);
+        Some((region.addr, region.len))
     }
 
     fn alloc_em(&mut self, len: usize, em_type: SecMemType) -> Option<(usize, usize, usize)> {

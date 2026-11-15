@@ -8,8 +8,8 @@
 use super::SecMemProtector;
 use core::usize;
 use pmpm::{
-    PmpConfig, bitmap::PMPSlotAllocator, check_pmp_area_available, set_pmp_entry,
-    set_pmp_entry_sync,
+    PmpConfig, bitmap::PMPSlotAllocator, check_pmp_area_available, disable_pmp_entry,
+    set_pmp_entry, set_pmp_entry_sync,
 };
 use riscv::register::{Permission, Range};
 
@@ -94,13 +94,7 @@ impl SecMemProtector for SecMemProtectorByPMP {
         }
     }
     fn disable(&self, hwid: u32) -> bool {
-        self.is_managed(hwid)
-            && set_pmp_entry_sync(
-                hwid,
-                0,
-                0,
-                &PmpConfig::new(Range::OFF, Permission::NONE, false),
-            )
+        self.is_managed(hwid) && disable_pmp_entry(hwid)
     }
     /// Not implemented as a real operation: nothing calls it, and with the current
     /// zero-length call it returns `false` instead of panicking. See #502.

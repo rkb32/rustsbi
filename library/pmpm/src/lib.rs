@@ -191,7 +191,10 @@ fn slice_log2len(len: usize, range: Range) -> Option<u32> {
 
 pub fn set_pmp_entry(idx: u32, addr: usize, len: usize, config: &PmpConfig) -> bool {
     // The memory area should be check before function call.
-    if idx >= MAX_PMP_ENTRY_COUNT {
+    if idx >= MAX_PMP_ENTRY_COUNT || get_pmp_cfg(idx).is_locked() {
+        return false;
+    }
+    if !pmpaddr_writable(idx) {
         return false;
     }
     let Some(log2len) = slice_log2len(len, config.range) else {
@@ -207,7 +210,7 @@ pub fn set_pmp_entry(idx: u32, addr: usize, len: usize, config: &PmpConfig) -> b
 
 pub fn set_pmp_addr(idx: u32, addr: usize, len: usize, range: Range) -> bool {
     // The memory area should be check before function call.
-    if idx >= MAX_PMP_ENTRY_COUNT {
+    if idx >= MAX_PMP_ENTRY_COUNT || !pmpaddr_writable(idx) {
         return false;
     }
     let Some(log2len) = slice_log2len(len, range) else {
@@ -217,6 +220,31 @@ pub fn set_pmp_addr(idx: u32, addr: usize, len: usize, range: Range) -> bool {
     unsafe {
         _set_pmp_addr(idx, encode_pmp_addr(&slice, range));
     }
+    true
+}
+
+/// Whether writing pmpaddr[idx] takes effect. Hardware ignores the write if entry `idx` is
+/// locked, or if entry `idx + 1` is a locked TOR entry (it uses pmpaddr[idx] as its bottom).
+fn pmpaddr_writable(idx: u32) -> bool {
+    if get_pmp_cfg(idx).is_locked() {
+        return false;
+    }
+    if idx + 1 < MAX_PMP_ENTRY_COUNT {
+        let next = get_pmp_cfg(idx + 1);
+        if next.is_locked() && next.range() == Range::TOR {
+            return false;
+        }
+    }
+    true
+}
+
+/// Turns entry `idx` off by writing its config only. pmpaddr[idx] is kept, because it is the
+/// bottom of a TOR entry at idx+1.
+pub fn disable_pmp_entry(idx: u32) -> bool {
+    if idx >= MAX_PMP_ENTRY_COUNT || get_pmp_cfg(idx).is_locked() {
+        return false;
+    }
+    set_pmp_cfg(idx, &PmpConfig::new(Range::OFF, Permission::NONE, false));
     true
 }
 
