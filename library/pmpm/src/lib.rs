@@ -174,6 +174,10 @@ pub fn set_pmp_entry_sync(idx: u32, addr: usize, len: usize, config: &PmpConfig)
 /// Only NAPOT uses the length. Other ranges ignore it, so `len` (possibly 0) is accepted.
 /// Lengths below 8 would underflow the NAPOT encoding. Non-power-of-two lengths round down;
 /// the caller must check the area first (see `check_pmp_area_available`).
+///
+/// Contract for full-space NAPOT: `len == usize::MAX` means the entire implemented address
+/// space. It encodes to an all-ones pmpaddr, and decoding that value gives back `usize::BITS`.
+/// Coverage of the real hardware depends on the implemented physical address width.
 fn slice_log2len(len: usize, range: Range) -> Option<u32> {
     match range {
         Range::NAPOT => {
