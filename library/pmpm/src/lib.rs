@@ -485,6 +485,32 @@ mod tests {
     }
 
     #[test]
+    fn test_pmp_slot_bounds() {
+        assert_eq!(PmpSlot::new(0).map(|s| s.index()), Some(0));
+        assert_eq!(
+            PmpSlot::new(MAX_PMP_ENTRY_COUNT - 1).map(|s| s.index()),
+            Some(15)
+        );
+        assert!(PmpSlot::new(MAX_PMP_ENTRY_COUNT).is_none());
+        assert!(PmpSlot::new(u32::MAX).is_none());
+    }
+
+    #[test]
+    fn test_full_space_napot() {
+        // Full-space NAPOT (len == usize::MAX) encodes to all ones and decodes back to BITS.
+        let full = slice_for_full_space();
+        assert_eq!(encode_pmp_addr(&full, Range::NAPOT), usize::MAX);
+        assert_eq!(
+            decode_pmp_addr(usize::MAX, Range::NAPOT).log2len(),
+            usize::BITS
+        );
+    }
+
+    fn slice_for_full_space() -> PmpSlice {
+        create_pmp_slice(usize::BITS, 0)
+    }
+
+    #[test]
     fn test_check_pmp_area_available() {
         assert!(
             !check_pmp_area_available(0x12345679, 4, Range::NA4),

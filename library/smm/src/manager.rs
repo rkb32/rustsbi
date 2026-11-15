@@ -308,6 +308,42 @@ mod smm_stress_tests {
     const MAX_ALLOC: usize = 16 * 1024 * 1024; // 16MB
     const REGION_COUNT: usize = 8; // 8个Region，每个64MB
 
+    // Slots 2..=14 are allocable (13 slots); 0, 1 and 15 are reserved.
+    const ALLOCABLE_SLOTS: usize = 13;
+
+    #[test]
+    fn test_extend_fails_when_no_slot_free() {
+        let mut manager = UniSecMemManager::<30, RTAlloc<30>, AppAlloc<30, 256>>::new();
+        assert!(manager.init(0x1000, 0x1000));
+        for i in 0..ALLOCABLE_SLOTS {
+            assert!(
+                manager.extend(0x4000_0000 + i * 0x1000, 0x1000),
+                "extend {} should succeed",
+                i
+            );
+        }
+        // No free slot left: must report failure, not success.
+        assert!(!manager.extend(0x4000_0000 + ALLOCABLE_SLOTS * 0x1000, 0x1000));
+    }
+
+    #[test]
+    fn test_reclaim_returns_unused_region_and_frees_slot() {
+        let mut manager = UniSecMemManager::<30, RTAlloc<30>, AppAlloc<30, 256>>::new();
+        assert!(manager.init(0x1000, 0x1000));
+        for i in 0..ALLOCABLE_SLOTS {
+            assert!(manager.extend(0x4000_0000 + i * 0x1000, 0x1000));
+        }
+        assert!(!manager.extend(0x4000_0000 + ALLOCABLE_SLOTS * 0x1000, 0x1000));
+
+        // Every region is unused, so reclaim returns each one; the last call returns None.
+        for _ in 0..ALLOCABLE_SLOTS {
+            assert!(manager.reclaim().is_some());
+        }
+        assert_eq!(manager.reclaim(), None);
+        // Reclaimed slots are allocable again.
+        assert!(manager.extend(0x5000_0000, 0x1000));
+    }
+
     #[test]
     fn test_uni_secmem_manager_stress_aligned() {
         let mut raw_buffer = vec![0u8; POOL_SIZE * 2];

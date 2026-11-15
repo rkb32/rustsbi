@@ -198,6 +198,21 @@ mod tests {
         assert_eq!(allocator.free(slot(4)), Err(PmpError::IndexOutOfRange));
     }
 
+    // --- Test: reserved slots are managed, and never allocated ---
+    #[test]
+    fn test_managed_reserved_not_allocated() {
+        // Alloc mask excludes slots 0, 1, 15; manage mask includes them.
+        let alloc_mask = create_mask(&[2, 3]);
+        let manage_mask = create_mask(&[0, 1, 2, 3, 15]);
+        let mut allocator = PMPSlotAllocator::new(alloc_mask, manage_mask);
+        assert!(allocator.is_managed(slot(0)));
+        assert!(allocator.is_managed(slot(15)));
+        assert!(!allocator.is_managed(slot(4)));
+        assert_eq!(allocator.alloc().unwrap().index(), 2);
+        assert_eq!(allocator.alloc().unwrap().index(), 3);
+        assert_eq!(allocator.alloc(), Err(PmpError::NoFreeSlot));
+    }
+
     // --- Test: is_alloc Check ---
     const TEST_BIT1: u32 = MAX_PMP_ENTRY_COUNT - 1;
     const TEST_BIT2: u32 = MAX_PMP_ENTRY_COUNT - 2;
