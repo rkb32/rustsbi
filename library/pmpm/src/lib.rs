@@ -92,6 +92,10 @@ impl PmpSlice {
     pub fn lo(&self) -> usize {
         self.pa_lo
     }
+    /// Exclusive upper bound of a TOR region. Only meaningful for `Range::TOR`.
+    pub fn hi(&self) -> usize {
+        self.pa_hi
+    }
     pub fn start(&self) -> usize {
         self.pa_lo
     }
@@ -129,7 +133,8 @@ pub fn encode_pmp_addr(slice: &PmpSlice, range: Range) -> usize {
             }
         }
         Range::NA4 => addr >> PMP_SHIFT,
-        Range::TOR => addr >> PMP_SHIFT,
+        // TOR: pmpaddr[i] holds the exclusive top; pmpaddr[i-1] holds the start (set by the caller).
+        Range::TOR => slice.pa_hi >> PMP_SHIFT,
         Range::OFF => 0,
     }
 }
@@ -150,7 +155,8 @@ pub fn decode_pmp_addr(pmpaddr: usize, range: Range) -> PmpSlice {
             }
         }
         Range::NA4 => PmpSlice::new(2, pmpaddr << PMP_SHIFT, 0),
-        Range::TOR => PmpSlice::new(0, pmpaddr << PMP_SHIFT, 0),
+        // A single TOR register holds only the top; the start lives in pmpaddr[i-1].
+        Range::TOR => PmpSlice::new(0, 0, pmpaddr << PMP_SHIFT),
         Range::OFF => PmpSlice::new(0, 0, 0),
     }
 }
@@ -220,6 +226,26 @@ fn slice_log2len(len: usize, range: Range) -> Option<u32> {
     }
 }
 
+/// Builds the slice to encode for `range`. Returns `None` if the length cannot be represented
+/// (NAPOT below 8 bytes, or a TOR top that overflows).
+fn pmp_slice(addr: usize, len: usize, range: Range) -> Option<PmpSlice> {
+    match range {
+        // TOR: the top boundary is addr + len. pmpaddr[i-1] must be set to `addr` by the caller.
+        Range::TOR => Some(PmpSlice::new(0, addr, addr.checked_add(len)?)),
+        _ => Some(PmpSlice::new(slice_log2len(len, range)?, addr, 0)),
+    }
+}
+
+/// For TOR, entry `slot` covers [pmpaddr[slot-1], pmpaddr[slot]). Accept `addr` only if it is
+/// that bottom, since this function does not write pmpaddr[slot-1].
+fn tor_bottom_matches(slot: PmpSlot, addr: usize) -> bool {
+    if slot.index() == 0 {
+        addr == 0
+    } else {
+        (_get_pmp_addr(slot.index() - 1) << PMP_SHIFT) == addr
+    }
+}
+
 pub fn set_pmp_entry(slot: PmpSlot, addr: usize, len: usize, config: &PmpConfig) -> bool {
     let idx = slot.index();
     // The memory area should be check before function call.
@@ -229,10 +255,12 @@ pub fn set_pmp_entry(slot: PmpSlot, addr: usize, len: usize, config: &PmpConfig)
     if !pmpaddr_writable(slot) {
         return false;
     }
-    let Some(log2len) = slice_log2len(len, config.range) else {
+    if config.range == Range::TOR && !tor_bottom_matches(slot, addr) {
+        return false;
+    }
+    let Some(slice) = pmp_slice(addr, len, config.range) else {
         return false;
     };
-    let slice = PmpSlice::new(log2len, addr, 0);
     unsafe {
         _set_pmp_addr(idx, encode_pmp_addr(&slice, config.range));
         set_pmp_cfg(slot, config);
@@ -246,10 +274,12 @@ pub fn set_pmp_addr(slot: PmpSlot, addr: usize, len: usize, range: Range) -> boo
     if !pmpaddr_writable(slot) {
         return false;
     }
-    let Some(log2len) = slice_log2len(len, range) else {
+    if range == Range::TOR && !tor_bottom_matches(slot, addr) {
+        return false;
+    }
+    let Some(slice) = pmp_slice(addr, len, range) else {
         return false;
     };
-    let slice = PmpSlice::new(log2len, addr, 0);
     unsafe {
         _set_pmp_addr(idx, encode_pmp_addr(&slice, range));
     }
@@ -430,31 +460,28 @@ mod tests {
 
     #[test]
     fn test_encode_decode_tor() {
-        let pa_lo_tor = 0x80000000;
-        let slice_tor = create_pmp_slice(30, pa_lo_tor);
-        let expected_encoded = pa_lo_tor >> PMP_SHIFT;
+        // Region [0x8000_0000, 0x8000_1400): length 0x1400 is not a power of two.
+        let slice_tor = pmp_slice(0x8000_0000, 0x1400, Range::TOR).unwrap();
         let encoded_tor = encode_pmp_addr(&slice_tor, Range::TOR);
-        assert_eq!(encoded_tor, expected_encoded, "TOR mode encode failed");
+        assert_eq!(
+            encoded_tor,
+            0x8000_1400 >> PMP_SHIFT,
+            "TOR encode should write the top"
+        );
         let decoded_tor = decode_pmp_addr(encoded_tor, Range::TOR);
         assert_eq!(
-            decoded_tor.start(),
-            pa_lo_tor,
-            "TOR mode decode start address failed"
+            decoded_tor.hi(),
+            0x8000_1400,
+            "TOR decode should return the top"
         );
         assert_eq!(
             decoded_tor.log2len(),
             0,
-            "TOR mode decode should return log2len=0"
+            "TOR decode should return log2len=0"
         );
 
-        let pa_lo_align = 0x1000;
-        let encoded_align = encode_pmp_addr(&create_pmp_slice(0, pa_lo_align), Range::TOR);
-        let decoded_align = decode_pmp_addr(encoded_align, Range::TOR);
-        assert_eq!(
-            decoded_align.start(),
-            pa_lo_align,
-            "TOR mode aligned address decode failed"
-        );
+        // Overflowing top is rejected instead of wrapping.
+        assert!(pmp_slice(usize::MAX - 3, 8, Range::TOR).is_none());
     }
 
     #[test]
