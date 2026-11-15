@@ -169,17 +169,29 @@ pub fn set_pmp_entry_sync(idx: u32, addr: usize, len: usize, config: &PmpConfig)
     set_pmp_entry(idx, addr, len, config)
 }
 
+/// Returns the log2 of `len` for `range`, or `None` if NAPOT is given a zero length.
+///
+/// Only NAPOT uses the length. Other ranges ignore it, so `len` (possibly 0) is accepted.
+/// The caller must check the area first (see `check_pmp_area_available`).
+fn slice_log2len(len: usize, range: Range) -> Option<u32> {
+    match range {
+        Range::NAPOT => {
+            if len == usize::MAX {
+                Some(usize::BITS)
+            } else {
+                len.checked_ilog2()
+            }
+        }
+        Range::NA4 | Range::TOR | Range::OFF => Some(0),
+    }
+}
+
 pub fn set_pmp_entry(idx: u32, addr: usize, len: usize, config: &PmpConfig) -> bool {
     // The memory area should be check before function call.
-    let slice = PmpSlice::new(
-        if len == usize::MAX {
-            usize::BITS
-        } else {
-            len.ilog2()
-        },
-        addr,
-        0,
-    );
+    let Some(log2len) = slice_log2len(len, config.range) else {
+        return false;
+    };
+    let slice = PmpSlice::new(log2len, addr, 0);
     unsafe {
         _set_pmp_addr(idx, encode_pmp_addr(&slice, config.range));
         set_pmp_cfg(idx, config);
@@ -189,15 +201,10 @@ pub fn set_pmp_entry(idx: u32, addr: usize, len: usize, config: &PmpConfig) -> b
 
 pub fn set_pmp_addr(idx: u32, addr: usize, len: usize, range: Range) -> bool {
     // The memory area should be check before function call.
-    let slice = PmpSlice::new(
-        if len == usize::MAX {
-            usize::BITS
-        } else {
-            len.ilog2()
-        },
-        addr,
-        0,
-    );
+    let Some(log2len) = slice_log2len(len, range) else {
+        return false;
+    };
+    let slice = PmpSlice::new(log2len, addr, 0);
     unsafe {
         _set_pmp_addr(idx, encode_pmp_addr(&slice, range));
     }
@@ -394,6 +401,19 @@ mod tests {
             1 << 0,
             "OFF mode decode length should return 1"
         );
+    }
+
+    #[test]
+    fn test_slice_log2len() {
+        assert_eq!(slice_log2len(8, Range::NAPOT), Some(3));
+        assert_eq!(slice_log2len(0x1000, Range::NAPOT), Some(12));
+        assert_eq!(slice_log2len(usize::MAX, Range::NAPOT), Some(usize::BITS));
+        // Zero length for NAPOT (what enable() passes) must not panic.
+        assert_eq!(slice_log2len(0, Range::NAPOT), None);
+        // Other ranges ignore the length, so zero is fine (disable() relies on this).
+        assert_eq!(slice_log2len(0, Range::OFF), Some(0));
+        assert_eq!(slice_log2len(0, Range::NA4), Some(0));
+        assert_eq!(slice_log2len(0, Range::TOR), Some(0));
     }
 
     #[test]

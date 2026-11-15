@@ -92,7 +92,7 @@ impl PMPSlotAllocator {
     }
 
     pub fn is_managed(&self, idx: u32) -> bool {
-        self.manage_mask & (1 << idx) != 0
+        idx < MAX_PMP_ENTRY_COUNT && self.manage_mask & (1u64 << idx) != 0
     }
 }
 

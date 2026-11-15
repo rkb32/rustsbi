@@ -17,13 +17,16 @@ type UniSecMemProtector = TestSecMemProtector;
 /// PMP N-1 : Default grant kernel access with all mem.
 /// PMP 1   : Only used in Penglai, for temporarily grant kernel access with specific sec mem.
 /// PMP 0   : Protect SM code/data.
-const UNI_SECMEM_SM_SLOT: u32 = 1 << 0;
-const UNI_SECMEM_TEMP_SLOT: u32 = 1 << 1;
-const UNI_SECMEM_DEFAULT_SLOT: u32 = 1 << (MAX_PMP_ENTRY_COUNT - 1);
+const UNI_SECMEM_SM_SLOT: u32 = 0;
+const UNI_SECMEM_TEMP_SLOT: u32 = 1;
+const UNI_SECMEM_DEFAULT_SLOT: u32 = MAX_PMP_ENTRY_COUNT - 1;
 const UNI_SECMEM_PMP_ALLOCMASK: u64 = ((1 << MAX_PMP_ENTRY_COUNT) - 1)
-    & !((UNI_SECMEM_SM_SLOT | UNI_SECMEM_TEMP_SLOT | UNI_SECMEM_TEMP_SLOT) as u64);
-const UNI_SECMEM_PMP_MANAGEMASK: u64 = UNI_SECMEM_PMP_ALLOCMASK
-    & ((UNI_SECMEM_SM_SLOT | UNI_SECMEM_DEFAULT_SLOT | UNI_SECMEM_TEMP_SLOT) as u64);
+    & !((1u64 << UNI_SECMEM_SM_SLOT)
+        | (1u64 << UNI_SECMEM_TEMP_SLOT)
+        | (1u64 << UNI_SECMEM_DEFAULT_SLOT));
+const UNI_SECMEM_PMP_MANAGEMASK: u64 = (1u64 << UNI_SECMEM_SM_SLOT)
+    | (1u64 << UNI_SECMEM_TEMP_SLOT)
+    | (1u64 << UNI_SECMEM_DEFAULT_SLOT);
 
 pub struct UniSecMemManager<const ORDER: usize, AR, AA>
 where
@@ -130,20 +133,21 @@ where
             return false;
         }
 
-        // Try alloc a hardware to protect new region
-        if let Some(hwid) = self.protector.alloc() {
-            if !self.protector.retrive_access_all(addr, len, hwid) {
-                self.protector.free(hwid);
-                return false;
-            }
-            self.cur_idx += 1;
-            self.alloc_regions.push(SecMemRegion::<ORDER, AR, AA>::new(
-                addr,
-                len,
-                self.cur_idx,
-                hwid,
-            ));
+        // Try alloc a hardware to protect new region; no free slot means no region was created.
+        let Some(hwid) = self.protector.alloc() else {
+            return false;
+        };
+        if !self.protector.retrive_access_all(addr, len, hwid) {
+            self.protector.free(hwid);
+            return false;
         }
+        self.cur_idx += 1;
+        self.alloc_regions.push(SecMemRegion::<ORDER, AR, AA>::new(
+            addr,
+            len,
+            self.cur_idx,
+            hwid,
+        ));
         true
     }
 
